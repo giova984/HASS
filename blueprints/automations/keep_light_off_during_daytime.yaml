@@ -62,7 +62,7 @@ action:
           - service: light.turn_off
             target:
               entity_id: !input light_entity
-          - service: persistent_notification.create
-            data:
-              title: "Light Turned Off"
-              message: "{{ light_name }} was turned off because it's daytime" 
+          # - service: persistent_notification.create
+          #   data:
+          #     title: "Light Turned Off"
+          #     message: "{{ light_name }} was turned off because it's daytime" 
