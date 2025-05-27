@@ -30,10 +30,7 @@ blueprint:
           unit_of_measurement: min
           mode: box
 
-variables:
-  light_name: "{{ states[input.light_entity].attributes.friendly_name }}"
-
-alias: "Keep {{ light_name }} Off During Daytime"
+mode: single
 
 trigger:
   # Trigger at sunrise
