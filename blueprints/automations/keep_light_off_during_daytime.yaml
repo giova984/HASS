@@ -30,6 +30,11 @@ blueprint:
           unit_of_measurement: min
           mode: box
 
+variables:
+  light_name: "{{ states[input.light_entity].attributes.friendly_name }}"
+
+alias: "Keep {{ light_name }} Off During Daytime"
+
 trigger:
   # Trigger at sunrise
   - platform: sun
@@ -48,7 +53,6 @@ condition:
   - condition: sun
     after: sunrise
     before: sunset
-    offset: !input offset_before_sunrise
 
 action:
   - choose:
@@ -64,4 +68,4 @@ action:
           - service: persistent_notification.create
             data:
               title: "Light Turned Off"
-              message: "{{ input.light_entity }} was turned off because it's daytime" 
+              message: "{{ light_name }} was turned off because it's daytime" 
