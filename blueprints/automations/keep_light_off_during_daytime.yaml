@@ -1,5 +1,5 @@
 blueprint:
-  name: Light Daytime Control
+  name: Keep Light Off During Daytime
   description: Keeps a light off during daytime hours (from sunrise to sunset)
   domain: automation
   input:
