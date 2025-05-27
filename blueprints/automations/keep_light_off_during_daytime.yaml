@@ -1,0 +1,67 @@
+blueprint:
+  name: Light Daytime Control
+  description: Keeps a light off during daytime hours (from sunrise to sunset)
+  domain: automation
+  input:
+    light_entity:
+      name: Light
+      description: The light to control
+      selector:
+        entity:
+          domain: light
+    offset_before_sunrise:
+      name: Offset Before Sunrise
+      description: Time to turn off the light before sunrise (negative values turn off earlier)
+      default: 0
+      selector:
+        number:
+          min: -120
+          max: 120
+          unit_of_measurement: min
+          mode: box
+    offset_after_sunset:
+      name: Offset After Sunset
+      description: Time to allow the light to turn on after sunset (negative values allow earlier)
+      default: 0
+      selector:
+        number:
+          min: -120
+          max: 120
+          unit_of_measurement: min
+          mode: box
+
+trigger:
+  # Trigger at sunrise
+  - platform: sun
+    event: sunrise
+    offset: !input offset_before_sunrise
+  # Trigger at sunset
+  - platform: sun
+    event: sunset
+    offset: !input offset_after_sunset
+  # Trigger when light state changes
+  - platform: state
+    entity_id: !input light_entity
+
+condition:
+  # Only turn off during daytime
+  - condition: sun
+    after: sunrise
+    before: sunset
+    offset: !input offset_before_sunrise
+
+action:
+  - choose:
+      # If it's daytime and the light is on, turn it off
+      - conditions:
+          - condition: state
+            entity_id: !input light_entity
+            state: 'on'
+        sequence:
+          - service: light.turn_off
+            target:
+              entity_id: !input light_entity
+          - service: persistent_notification.create
+            data:
+              title: "Light Turned Off"
+              message: "{{ input.light_entity }} was turned off because it's daytime" 
