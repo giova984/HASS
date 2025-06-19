@@ -1,0 +1,214 @@
+blueprint:
+  name: AC Window Monitor
+  description: Monitors AC usage and alerts when windows/doors are open, with automatic shutdown after specified delay
+  domain: automation
+  source_url: https://github.com/home-assistant/core/blob/dev/homeassistant/components/blueprint/schemas/automation.py
+  input:
+    area_id:
+      name: Area
+      description: Select the area where this automation will run (required)
+      selector:
+        area: {}
+    climate_entity:
+      name: Climate Entity
+      description: The climate/AC entity to monitor (required)
+      selector:
+        entity:
+          domain: climate
+    window_door_sensors:
+      name: Window/Door Sensors
+      description: List of window and door sensors to monitor (at least one required)
+      selector:
+        entity:
+          domain: binary_sensor
+          multiple: true
+    alexa_media_player:
+      name: Alexa Media Player
+      description: Alexa device to use for notifications (optional)
+      default: null
+      selector:
+        entity:
+          domain: media_player
+          integration: alexa_media
+    shutdown_delay:
+      name: Shutdown Delay
+      description: Minutes to wait before shutting down AC after warning
+      default: 15
+      selector:
+        number:
+          min: 0
+          max: 60
+          unit_of_measurement: min
+          mode: box
+    enable_auto_shutdown:
+      name: Enable Auto Shutdown
+      description: Automatically shut down AC if windows/doors remain open
+      default: true
+      selector:
+        boolean:
+
+variables:
+  area_id: !input area_id
+  climate_entity: !input climate_entity
+  window_door_sensors: !input window_door_sensors
+  alexa_media_player: !input alexa_media_player
+  shutdown_delay: !input shutdown_delay
+  enable_auto_shutdown: !input enable_auto_shutdown
+  area_name: "{{ area_name(area_id) }}"
+
+mode: restart
+
+trigger:
+  # When AC turns on
+  - platform: state
+    entity_id: !input climate_entity
+    to: 'heat'
+    id: ac_heat_on
+  - platform: state
+    entity_id: !input climate_entity
+    to: 'cool'
+    id: ac_cool_on
+  - platform: state
+    entity_id: !input climate_entity
+    to: 'dry'
+    id: ac_dry_on
+  - platform: state
+    entity_id: !input climate_entity
+    to: 'auto'
+    id: ac_auto_on
+  # When any window/door opens
+  - platform: state
+    entity_id: !input window_door_sensors
+    to: 'on'
+    id: window_door_open
+  # When any window/door closes
+  - platform: state
+    entity_id: !input window_door_sensors
+    to: 'off'
+    id: window_door_close
+
+condition:
+  # Check if AC is running
+  - condition: or
+    conditions:
+      - condition: state
+        entity_id: !input climate_entity
+        state: 'heat'
+      - condition: state
+        entity_id: !input climate_entity
+        state: 'cool'
+      - condition: state
+        entity_id: !input climate_entity
+        state: 'dry'
+      - condition: state
+        entity_id: !input climate_entity
+        state: 'auto'
+
+action:
+  - choose:
+      # When AC turns on or window/door opens, check for open windows/doors
+      - conditions:
+          - condition: or
+            conditions:
+              - condition: trigger
+                id: ac_heat_on
+              - condition: trigger
+                id: ac_cool_on
+              - condition: trigger
+                id: ac_dry_on
+              - condition: trigger
+                id: ac_auto_on
+              - condition: trigger
+                id: window_door_open
+        sequence:
+          - delay:
+              seconds: 2
+          - variables:
+              open_sensors_list: >
+                {% set ns = namespace(sensors=[]) %}
+                {% for sensor in window_door_sensors %}
+                  {% if states(sensor) == 'on' %}
+                    {% set ns.sensors = ns.sensors + [states[sensor].attributes.friendly_name or sensor.split('.')[1]|replace('_', ' ')|title] %}
+                  {% endif %}
+                {% endfor %}
+                {{ ns.sensors|join(', ') }}
+          - if:
+              - condition: template
+                value_template: "{{ open_sensors_list != '' }}"
+            then:
+              - service: notify.alexa_media
+                metadata: {}
+                data:
+                  message: >
+                    {% if ',' in open_sensors_list %}
+                    Le seguenti aperture sono aperte: {{ open_sensors_list }}, chiudile o l'aria si spegnerà tra {{ shutdown_delay }} minuti
+                    {% else %}
+                    La {{ open_sensors_list }} è aperta, chiudila o l'aria si spegnerà tra {{ shutdown_delay }} minuti
+                    {% endif %}
+                  target:
+                    - "{{ state_attr(alexa_media_player, 'friendly_name') }}"
+              # Wait for the specified delay
+              - delay:
+                  minutes: "{{ shutdown_delay }}"
+              # Check if windows are still open and AC is still running
+              - variables:
+                  current_open_sensors: >
+                    {% set ns = namespace(sensors=[]) %}
+                    {% for sensor in window_door_sensors %}
+                      {% if states(sensor) == 'on' %}
+                        {% set ns.sensors = ns.sensors + [states[sensor].attributes.friendly_name or sensor.split('.')[1]|replace('_', ' ')|title] %}
+                      {% endif %}
+                    {% endfor %}
+                    {{ ns.sensors|join(', ') }}
+              - if:
+                  - condition: template
+                    value_template: "{{ current_open_sensors != '' and enable_auto_shutdown }}"
+                  - condition: or
+                    conditions:
+                      - condition: state
+                        entity_id: !input climate_entity
+                        state: 'heat'
+                      - condition: state
+                        entity_id: !input climate_entity
+                        state: 'cool'
+                      - condition: state
+                        entity_id: !input climate_entity
+                        state: 'dry'
+                      - condition: state
+                        entity_id: !input climate_entity
+                        state: 'auto'
+                then:
+                  - service: climate.turn_off
+                    target:
+                      entity_id: !input climate_entity
+                  - service: notify.alexa_media
+                    metadata: {}
+                    data:
+                      message: "L'aria in {{ area_name }} è stata spenta."
+                      target:
+                        - "{{ state_attr(alexa_media_player, 'friendly_name') }}"
+
+      # When window/door closes, notify that AC will stay on
+      - conditions:
+          - condition: trigger
+            id: window_door_close
+        sequence:
+          - variables:
+              remaining_open_sensors: >
+                {% set ns = namespace(sensors=[]) %}
+                {% for sensor in window_door_sensors %}
+                  {% if states(sensor) == 'on' %}
+                    {% set ns.sensors = ns.sensors + [states[sensor].attributes.friendly_name or sensor.split('.')[1]|replace('_', ' ')|title] %}
+                  {% endif %}
+                {% endfor %}
+                {{ ns.sensors|join(', ') }}
+          - if:
+              - condition: template
+                value_template: "{{ remaining_open_sensors == '' }}"
+            then:
+              - service: notify.alexa_media
+                metadata: {}
+                data:
+                  message: "Hai chiuso tutte le aperture, l'aria in {{ area_name }} non si spegnerà"
+                  target:
+                    - "{{ state_attr(alexa_media_player, 'friendly_name') }}"
