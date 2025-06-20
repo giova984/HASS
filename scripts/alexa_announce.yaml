@@ -1,0 +1,26 @@
+alexa_announce:
+  alias: Alexa announce
+  description: ""
+  icon: mdi:bullhorn
+  fields:
+    message:
+      selector:
+        text: null
+      name: message
+      required: true
+    alexa_media_player:
+      name: Alexa Media Player
+      description: Alexa device to use for notifications (default Everywhere)
+      default: media_player.ovunque
+      selector:
+        entity:
+          domain:
+            - media_player
+          integration: alexa_media
+          multiple: false
+  sequence:
+    - service: "notify.alexa_media_{{ alexa_media_player.split('.')[1] | replace(' ', '_') | lower }}"
+      data:
+        data:
+          type: announce
+        message: "{{message}}"
