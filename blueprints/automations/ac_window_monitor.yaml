@@ -26,6 +26,23 @@ blueprint:
         entity:
           domain:
           - binary_sensor
+          device_class:
+          - door
+          - window
+          - opening
+          - garage_door
+          multiple: true
+    presence_sensors:
+      name: Presence/Occupancy Sensors
+      description: List of presence/occupancy sensors to monitor (optional)
+      default: []
+      selector:
+        entity:
+          domain:
+          - binary_sensor
+          device_class:
+          - presence
+          - occupancy
           multiple: true
     alexa_media_player:
       name: Alexa Media Player
@@ -37,10 +54,10 @@ blueprint:
           - media_player
           integration: alexa_media
           multiple: false
-    shutdown_delay:
-      name: Shutdown Delay
-      description: Minutes to wait before shutting down AC after warning
-      default: 15
+    openings_shutdown_delay:
+      name: Openings Shutdown Delay
+      description: Minutes to wait before shutting down AC after windows/doors warning
+      default: 10
       selector:
         number:
           min: 0.0
@@ -48,9 +65,31 @@ blueprint:
           unit_of_measurement: min
           mode: box
           step: 1.0
+    presence_shutdown_delay:
+      name: Presence Shutdown Delay
+      description: Minutes to wait before shutting down AC when no presence detected
+      default: 10
+      selector:
+        number:
+          min: 0.0
+          max: 120.0
+          unit_of_measurement: min
+          mode: box
+          step: 1.0
+    nobody_timeout:
+      name: Nobody Timeout
+      description: Minutes to wait before considering the room empty (prevents false triggers)
+      default: 2
+      selector:
+        number:
+          min: 0.0
+          max: 15.0
+          unit_of_measurement: min
+          mode: box
+          step: 1.0
     enable_auto_shutdown:
       name: Enable Auto Shutdown
-      description: Automatically shut down AC if windows/doors remain open
+      description: Automatically shut down AC if windows/doors remain open or no presence detected
       default: true
       selector:
         boolean: {}
@@ -58,8 +97,11 @@ variables:
   area_id: !input area_id
   climate_entity: !input climate_entity
   window_door_sensors: !input window_door_sensors
+  presence_sensors: !input presence_sensors
   alexa_media_player: !input alexa_media_player
-  shutdown_delay: !input shutdown_delay
+  openings_shutdown_delay: !input openings_shutdown_delay
+  presence_shutdown_delay: !input presence_shutdown_delay
+  nobody_timeout: !input nobody_timeout
   enable_auto_shutdown: !input enable_auto_shutdown
   area_name: '{{ area_name(area_id) }}'
 mode: restart
@@ -88,6 +130,10 @@ trigger:
   entity_id: !input window_door_sensors
   to: 'off'
   id: window_door_close
+- platform: state
+  entity_id: !input presence_sensors
+  to: 'off'
+  id: presence_off
 
 action:
   - choose:
@@ -119,6 +165,15 @@ action:
             - condition: state
               entity_id: !input climate_entity
               state: auto
+        - condition: template
+          value_template: >
+            {% set ns = namespace(sensors=[]) %}
+            {% for sensor in window_door_sensors %}
+              {% if states(sensor) == 'on' %}
+                {% set ns.sensors = ns.sensors + [states[sensor].attributes.friendly_name or sensor.split('.')[1]|replace('_', ' ')|title] %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.sensors|length > 0 }}
       sequence:
         - delay:
             seconds: 2
@@ -131,35 +186,138 @@ action:
                 {% endif %}
               {% endfor %}
               {{ ns.sensors|join(', ') }}
+        - service: notify.alexa_media
+          metadata: {}
+          data:
+            message: >
+              {% if ',' in open_sensors_list %}
+                Le seguenti aperture sono aperte: {{ open_sensors_list }}, chiudile o l'aria si spegnerà tra {{ openings_shutdown_delay }} minuti
+              {% else %}
+                La {{ open_sensors_list }} è aperta, chiudila o l'aria si spegnerà tra {{ openings_shutdown_delay }} minuti
+              {% endif %}
+            target:
+              - "{{ state_attr(alexa_media_player, 'friendly_name') }}"
+        - delay:
+            minutes: "{{ openings_shutdown_delay }}"
+        - variables:
+            current_open_sensors: >
+              {% set ns = namespace(sensors=[]) %}
+              {% for sensor in window_door_sensors %}
+                {% if states(sensor) == 'on' %}
+                  {% set ns.sensors = ns.sensors + [states[sensor].attributes.friendly_name or sensor.split('.')[1]|replace('_', ' ')|title] %}
+                {% endif %}
+              {% endfor %}
+              {{ ns.sensors|join(', ') }}
         - if:
             - condition: template
-              value_template: "{{ open_sensors_list != '' }}"
+              value_template: "{{ current_open_sensors != '' and enable_auto_shutdown }}"
+            - condition: or
+              conditions:
+                - condition: state
+                  entity_id: !input climate_entity
+                  state: heat
+                - condition: state
+                  entity_id: !input climate_entity
+                  state: cool
+                - condition: state
+                  entity_id: !input climate_entity
+                  state: dry
+                - condition: state
+                  entity_id: !input climate_entity
+                  state: auto
+          then:
+            - service: climate.turn_off
+              target:
+                entity_id: !input climate_entity
+            - service: notify.alexa_media
+              metadata: {}
+              data:
+                message: L'aria in {{ area_name }} è stata spenta per aperture aperte.
+                target:
+                  - "{{ state_attr(alexa_media_player, 'friendly_name') }}"
+
+      # When AC turns on and no doors are open, check for presence
+    - conditions:
+        - condition: or
+          conditions:
+            - condition: trigger
+              id: ac_heat_on
+            - condition: trigger
+              id: ac_cool_on
+            - condition: trigger
+              id: ac_dry_on
+            - condition: trigger
+              id: ac_auto_on
+        - condition: or
+          conditions:
+            - condition: state
+              entity_id: !input climate_entity
+              state: heat
+            - condition: state
+              entity_id: !input climate_entity
+              state: cool
+            - condition: state
+              entity_id: !input climate_entity
+              state: dry
+            - condition: state
+              entity_id: !input climate_entity
+              state: auto
+        - condition: template
+          value_template: >
+            {% set ns = namespace(sensors=[]) %}
+            {% for sensor in window_door_sensors %}
+              {% if states(sensor) == 'on' %}
+                {% set ns.sensors = ns.sensors + [states[sensor].attributes.friendly_name or sensor.split('.')[1]|replace('_', ' ')|title] %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.sensors|length == 0 }}
+        - condition: template
+          value_template: >
+            {% set any_presence = false %}
+            {% for sensor in presence_sensors %}
+              {% if states(sensor) == 'on' %}
+                {% set any_presence = true %}
+              {% endif %}
+            {% endfor %}
+            {{ not any_presence and presence_sensors|length > 0 }}
+      sequence:
+        - delay:
+            seconds: 2
+        - delay:
+            minutes: "{{ nobody_timeout }}"
+        - variables:
+            current_presence: >
+              {% set presence_detected = false %}
+              {% for sensor in presence_sensors %}
+                {% if states(sensor) == 'on' %}
+                  {% set presence_detected = true %}
+                {% endif %}
+              {% endfor %}
+              {{ presence_detected }}
+        - if:
+            - condition: template
+              value_template: "{{ not current_presence }}"
           then:
             - service: notify.alexa_media
               metadata: {}
               data:
-                message: >
-                  {% if ',' in open_sensors_list %}
-                    Le seguenti aperture sono aperte: {{ open_sensors_list }}, chiudile o l'aria si spegnerà tra {{ shutdown_delay }} minuti
-                  {% else %}
-                    La {{ open_sensors_list }} è aperta, chiudila o l'aria si spegnerà tra {{ shutdown_delay }} minuti
-                  {% endif %}
+                message: Non c'è nessuno in {{ area_name }}, l'aria si spegnerà tra {{ presence_shutdown_delay }} minuti se non rilevo presenza.
                 target:
                   - "{{ state_attr(alexa_media_player, 'friendly_name') }}"
             - delay:
-                minutes: "{{ shutdown_delay }}"
+                minutes: "{{ presence_shutdown_delay }}"
             - variables:
-                current_open_sensors: >
-                  {% set ns = namespace(sensors=[]) %}
-                  {% for sensor in window_door_sensors %}
+                final_presence: >
+                  {% set presence_detected = false %}
+                  {% for sensor in presence_sensors %}
                     {% if states(sensor) == 'on' %}
-                      {% set ns.sensors = ns.sensors + [states[sensor].attributes.friendly_name or sensor.split('.')[1]|replace('_', ' ')|title] %}
+                      {% set presence_detected = true %}
                     {% endif %}
                   {% endfor %}
-                  {{ ns.sensors|join(', ') }}
+                  {{ presence_detected }}
             - if:
                 - condition: template
-                  value_template: "{{ current_open_sensors != '' and enable_auto_shutdown }}"
+                  value_template: "{{ not final_presence and enable_auto_shutdown }}"
                 - condition: or
                   conditions:
                     - condition: state
@@ -181,7 +339,7 @@ action:
                 - service: notify.alexa_media
                   metadata: {}
                   data:
-                    message: L'aria in {{ area_name }} è stata spenta.
+                    message: L'aria in {{ area_name }} è stata spenta per mancanza di presenza.
                     target:
                       - "{{ state_attr(alexa_media_player, 'friendly_name') }}"
 
@@ -202,15 +360,112 @@ action:
         - if:
             - condition: template
               value_template: "{{ remaining_open_sensors == '' }}"
+            - condition: or
+              conditions:
+                - condition: state
+                  entity_id: !input climate_entity
+                  state: heat
+                - condition: state
+                  entity_id: !input climate_entity
+                  state: cool
+                - condition: state
+                  entity_id: !input climate_entity
+                  state: dry
+                - condition: state
+                  entity_id: !input climate_entity
+                  state: auto
           then:
             - service: notify.alexa_media
               metadata: {}
               data:
-                message: >
-                  {% if states(climate_entity) not in ['off', 'unknown', 'unavailable'] %}
-                    Hai chiuso tutte le aperture, l'aria in {{ area_name }} non si spegnerà.
-                  {% else %}
-                    Hai chiuso tutte le aperture.
-                  {% endif %}
+                message: Hai chiuso tutte le aperture, l'aria in {{ area_name }} non si spegnerà.
                 target:
                   - "{{ state_attr(alexa_media_player, 'friendly_name') }}"
+
+      # When presence sensors detect no one in the room
+    - conditions:
+        - condition: trigger
+          id: presence_off
+        - condition: or
+          conditions:
+            - condition: state
+              entity_id: !input climate_entity
+              state: heat
+            - condition: state
+              entity_id: !input climate_entity
+              state: cool
+            - condition: state
+              entity_id: !input climate_entity
+              state: dry
+            - condition: state
+              entity_id: !input climate_entity
+              state: auto
+        - condition: template
+          value_template: >
+            {% set any_presence = false %}
+            {% for sensor in presence_sensors %}
+              {% if states(sensor) == 'on' %}
+                {% set any_presence = true %}
+              {% endif %}
+            {% endfor %}
+            {{ not any_presence and presence_sensors|length > 0 }}
+      sequence:
+        - delay:
+            minutes: "{{ nobody_timeout }}"
+        - variables:
+            current_presence: >
+              {% set presence_detected = false %}
+              {% for sensor in presence_sensors %}
+                {% if states(sensor) == 'on' %}
+                  {% set presence_detected = true %}
+                {% endif %}
+              {% endfor %}
+              {{ presence_detected }}
+        - if:
+            - condition: template
+              value_template: "{{ not current_presence }}"
+          then:
+            - service: notify.alexa_media
+              metadata: {}
+              data:
+                message: Non c'è nessuno in {{ area_name }}, l'aria si spegnerà tra {{ presence_shutdown_delay }} minuti se non rilevo presenza.
+                target:
+                  - "{{ state_attr(alexa_media_player, 'friendly_name') }}"
+            - delay:
+                minutes: "{{ presence_shutdown_delay }}"
+            - variables:
+                final_presence: >
+                  {% set any_presence = false %}
+                  {% for sensor in presence_sensors %}
+                    {% if states(sensor) == 'on' %}
+                      {% set any_presence = true %}
+                    {% endif %}
+                  {% endfor %}
+                  {{ any_presence }}
+            - if:
+                - condition: template
+                  value_template: "{{ not final_presence and enable_auto_shutdown }}"
+                - condition: or
+                  conditions:
+                    - condition: state
+                      entity_id: !input climate_entity
+                      state: heat
+                    - condition: state
+                      entity_id: !input climate_entity
+                      state: cool
+                    - condition: state
+                      entity_id: !input climate_entity
+                      state: dry
+                    - condition: state
+                      entity_id: !input climate_entity
+                      state: auto
+              then:
+                - service: climate.turn_off
+                  target:
+                    entity_id: !input climate_entity
+                - service: notify.alexa_media
+                  metadata: {}
+                  data:
+                    message: L'aria in {{ area_name }} è stata spenta per mancanza di presenza.
+                    target:
+                      - "{{ state_attr(alexa_media_player, 'friendly_name') }}"
