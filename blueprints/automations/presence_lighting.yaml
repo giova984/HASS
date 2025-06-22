@@ -1,0 +1,116 @@
+blueprint:
+  name: Presence-Based Lighting
+  description: Automatically control lights based on room occupancy with configurable time windows and delays
+  domain: automation
+  input:
+    lights:
+      name: Lights to Control
+      description: Select the lights to turn on/off based on presence
+      default: []
+      selector:
+        entity:
+          domain:
+          - light
+          multiple: true
+    presence_sensors:
+      name: Presence/Occupancy Sensors
+      description: Select the sensors that detect presence in the room
+      default: []
+      selector:
+        entity:
+          domain: 
+          - binary_sensor
+          device_class:
+          - presence
+          - occupancy
+          - motion
+          multiple: true
+    clear_for:
+      name: Clear Delay (seconds)
+      description: Time to wait before considering the room unoccupied (0-300 seconds)
+      default: 10
+      selector:
+        number:
+          min: 0
+          max: 300
+          step: 1
+          unit_of_measurement: seconds
+    time_window_start:
+      name: Start Time
+      description: Start time for the automation to be active (24-hour format)
+      default: "00:00:00"
+      selector:
+        time:
+    time_window_end:
+      name: End Time
+      description: End time for the automation to be active (24-hour format)
+      default: "23:59:59"
+      selector:
+        time:
+    turn_off_delay:
+      name: Turn Off Delay (seconds)
+      description: Time to wait before turning off lights after room becomes unoccupied (0-600 seconds)
+      default: 120
+      selector:
+        number:
+          min: 0
+          max: 600
+          step: 1
+          unit_of_measurement: seconds
+    automation_name:
+      name: Automation Name
+      description: Name for this automation
+      default: "Presence-Based Lighting"
+      selector:
+        text:
+
+alias: !input automation_name
+
+trigger:
+  - platform: state
+    entity_id: !input presence_sensors
+    to: "on"
+    id: presence_detected
+  - platform: state
+    entity_id: !input presence_sensors
+    to: "off"
+    for:
+      seconds: !input clear_for
+    id: presence_cleared
+
+condition:
+  - condition: time
+    after: !input time_window_start
+    before: !input time_window_end
+
+action:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: presence_detected
+          # - condition: or
+          #   conditions:
+          #     - condition: state
+          #       entity_id: !input presence_sensors
+          #       state: "on"
+        sequence:
+          - service: light.turn_on
+            entity_id: !input lights
+      - conditions:
+          - condition: trigger
+            id: presence_cleared
+        sequence:
+          - delay:
+              seconds: !input turn_off_delay
+          - condition: and
+            conditions:
+              - condition: state
+                entity_id: !input presence_sensors
+                state: "off"
+                for:
+                  seconds: !input clear_for
+                match: all
+          - service: light.turn_off
+            entity_id: !input lights
+
+mode: single 
