@@ -29,6 +29,16 @@ blueprint:
           max: 120
           unit_of_measurement: min
           mode: box
+    turn_off_delay:
+      name: Turn Off Delay
+      description: Delay in seconds before turning off the light during daytime
+      default: 5
+      selector:
+        number:
+          min: 0
+          max: 120
+          unit_of_measurement: s
+          mode: box
 
 mode: single
 
@@ -59,6 +69,7 @@ action:
             entity_id: !input light_entity
             state: 'on'
         sequence:
+          - delay: !input turn_off_delay
           - service: light.turn_off
             target:
               entity_id: !input light_entity
