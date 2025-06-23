@@ -1,6 +1,6 @@
 blueprint:
   name: Presence-Based Lighting
-  description: Automatically control lights based on room occupancy with configurable time windows and delays
+  description: Automatically control lights based on room occupancy and door/window state with configurable time windows and delays
   domain: automation
   input:
     lights:
@@ -24,6 +24,19 @@ blueprint:
           - presence
           - occupancy
           - motion
+          multiple: true
+    door_window_sensors:
+      name: Door/Window Sensors
+      description: Select door/window sensors that should trigger lighting
+      default: []
+      selector:
+        entity:
+          domain: 
+          - binary_sensor
+          device_class:
+          - door
+          - window
+          - opening
           multiple: true
     clear_for:
       name: Clear Delay (seconds)
@@ -67,16 +80,28 @@ blueprint:
 alias: !input automation_name
 
 trigger:
+  # Presence detected
   - platform: state
     entity_id: !input presence_sensors
     to: "on"
     id: presence_detected
+  # Presence cleared
   - platform: state
     entity_id: !input presence_sensors
     to: "off"
     for:
       seconds: !input clear_for
     id: presence_cleared
+  # Door/window opened
+  - platform: state
+    entity_id: !input door_window_sensors
+    to: "on"
+    id: door_window_opened
+  # Door/window closed
+  - platform: state
+    entity_id: !input door_window_sensors
+    to: "off"
+    id: door_window_closed
 
 condition:
   - condition: time
@@ -85,30 +110,41 @@ condition:
 
 action:
   - choose:
+      # Turn on lights when presence detected or door/window opened
       - conditions:
-          - condition: trigger
-            id: presence_detected
-          # - condition: or
-          #   conditions:
-          #     - condition: state
-          #       entity_id: !input presence_sensors
-          #       state: "on"
+          - condition: or
+            conditions:
+              - condition: trigger
+                id: presence_detected
+              - condition: trigger
+                id: door_window_opened
         sequence:
           - service: light.turn_on
             entity_id: !input lights
+      # Turn off lights when no presence and all doors/windows closed
       - conditions:
-          - condition: trigger
-            id: presence_cleared
+          - condition: or
+            conditions:
+              - condition: trigger
+                id: presence_cleared
+              - condition: trigger
+                id: door_window_closed
         sequence:
           - delay:
               seconds: !input turn_off_delay
           - condition: and
             conditions:
+              # Check that all presence sensors are off for the clear delay
               - condition: state
                 entity_id: !input presence_sensors
                 state: "off"
                 for:
                   seconds: !input clear_for
+                match: all
+              # Check that all door/window sensors are closed
+              - condition: state
+                entity_id: !input door_window_sensors
+                state: "off"
                 match: all
           - service: light.turn_off
             entity_id: !input lights
